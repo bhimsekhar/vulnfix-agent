@@ -96,14 +96,7 @@ def _sort_versions(versions: list[str]) -> list[str]:
 # ── SERVER ────────────────────────────────────────────────────────────────────
 
 _mode = "TEST/Maven-Central" if TEST_MODE else "PRODUCTION/Internal-Nexus"
-mcp = FastMCP(
-    name="maven-mcp-server",
-    description=(
-        f"VulnFix global Maven repository tools — mode: {_mode}. "
-        f"Config: {CONFIG_PATH}. "
-        "3 tools: get_safe_version, check_availability, get_dependency_tree."
-    ),
-)
+mcp = FastMCP(name="maven-mcp-server")
 
 # ── TOOL 1 ────────────────────────────────────────────────────────────────────
 
