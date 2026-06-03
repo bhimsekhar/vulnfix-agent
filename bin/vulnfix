@@ -97,14 +97,31 @@ EOF
     echo "  Restart VS Code for changes to take effect."
 }
 
+# ── Python command detection (python3 on Mac/Linux, python on Windows) ────────
+# Tests actual execution — avoids Windows App Execution Aliases that shadow python3
+_python() {
+    for cmd in python3 python; do
+        if command -v "$cmd" &>/dev/null; then
+            local ver
+            ver=$("$cmd" --version 2>&1)
+            if [[ "$ver" == Python\ 3* ]]; then
+                echo "$cmd"; return
+            fi
+        fi
+    done
+    echo ""
+}
+
 # ── Command: update ───────────────────────────────────────────────────────────
 cmd_update() {
     step "Updating VulnFix from origin"
     git -C "$INSTALL_DIR" pull
     ok "Pulled latest"
 
+    local py; py=$(_python)
+    [[ -z "$py" ]] && fail "Python not found."
     step "Re-installing Python dependencies"
-    python3 -m pip install --quiet fastmcp httpx pyyaml packaging
+    "$py" -m pip install --quiet fastmcp httpx pyyaml packaging
     ok "Dependencies up to date"
 
     echo
@@ -117,52 +134,77 @@ cmd_validate() {
     step "Validating VulnFix setup"
     local ok_count=0 fail_count=0
 
-    check() {
-        local label="$1" result="$2"
-        if [[ "$result" == "ok" ]]; then
-            ok "$label"; (( ok_count++ )) || true
-        else
-            echo "    [FAIL] $label: $result"; (( fail_count++ )) || true
-        fi
-    }
+    pass() { ok "$1"; (( ok_count++ )) || true; }
+    fail_check() { echo "    [FAIL] $1: $2"; (( fail_count++ )) || true; }
 
-    # Python
-    py_ver=$(python3 --version 2>&1) && check "Python 3" "$py_ver" || check "Python 3" "not found"
-
-    # MCP server imports
-    mcp_check=$(python3 -c "import fastmcp, httpx, yaml, packaging" 2>&1) \
-        && check "Python deps (fastmcp, httpx, pyyaml, packaging)" "ok" \
-        || check "Python deps" "$mcp_check"
-
-    # Config file
-    [[ -f "$CONFIG_FILE" ]] \
-        && check "~/.vulnfix/config.yaml" "ok" \
-        || check "~/.vulnfix/config.yaml" "missing — run 'vulnfix configure'"
-
-    # MCP server file
-    [[ -f "$INSTALL_DIR/server/maven_mcp_server.py" ]] \
-        && check "~/.vulnfix/server/maven_mcp_server.py" "ok" \
-        || check "~/.vulnfix/server/maven_mcp_server.py" "missing — re-run install"
-
-    # Maven
-    mvn_ver=$(mvn --version 2>&1 | head -1) && check "Maven (mvn)" "$mvn_ver" \
-        || check "Maven (mvn)" "not found — add to PATH"
-
-    # m2 settings
-    M2="$HOME/.m2/settings.xml"
-    if [[ -f "$M2" ]] && grep -q "<mirror>" "$M2"; then
-        check "~/.m2/settings.xml (mirror)" "ok"
-    elif [[ -f "$M2" ]]; then
-        check "~/.m2/settings.xml" "exists but no <mirror> block"
+    # Python — try python3 then python (Windows uses python)
+    local py; py=$(_python)
+    if [[ -n "$py" ]]; then
+        pass "Python ($($py --version 2>&1))"
     else
-        check "~/.m2/settings.xml" "missing — run 'vulnfix configure'"
+        fail_check "Python" "not found — install Python 3.10+"
     fi
 
-    # MCP server dry-run
-    mcp_dry=$(VULNFIX_CONFIG="$CONFIG_FILE" python3 "$INSTALL_DIR/server/maven_mcp_server.py" --help 2>&1 | head -1 || true)
-    [[ -n "$mcp_dry" ]] \
-        && check "MCP server starts" "ok (exits on --help as expected)" \
-        || check "MCP server starts" "error — check $INSTALL_DIR/server/maven_mcp_server.py"
+    # Python deps
+    if [[ -n "$py" ]]; then
+        if "$py" -c "import fastmcp, httpx, yaml, packaging" 2>/dev/null; then
+            pass "Python deps (fastmcp, httpx, pyyaml, packaging)"
+        else
+            fail_check "Python deps" "run: $py -m pip install fastmcp httpx pyyaml packaging"
+        fi
+    fi
+
+    # Config file
+    if [[ -f "$CONFIG_FILE" ]]; then
+        pass "~/.vulnfix/config.yaml"
+    else
+        fail_check "~/.vulnfix/config.yaml" "missing — run 'vulnfix configure'"
+    fi
+
+    # MCP server file
+    if [[ -f "$INSTALL_DIR/server/maven_mcp_server.py" ]]; then
+        pass "~/.vulnfix/server/maven_mcp_server.py"
+    else
+        fail_check "~/.vulnfix/server/maven_mcp_server.py" "missing — re-run install"
+    fi
+
+    # Maven
+    if command -v mvn &>/dev/null; then
+        pass "Maven ($(mvn --version 2>&1 | head -1))"
+    else
+        fail_check "Maven (mvn)" "not found — add Maven to PATH"
+    fi
+
+    # m2 settings
+    local M2="$HOME/.m2/settings.xml"
+    if [[ -f "$M2" ]] && grep -q "<mirror>" "$M2"; then
+        pass "~/.m2/settings.xml (mirror block present)"
+    elif [[ -f "$M2" ]]; then
+        fail_check "~/.m2/settings.xml" "exists but has no <mirror> block — run 'vulnfix configure'"
+    else
+        fail_check "~/.m2/settings.xml" "missing — run 'vulnfix configure'"
+    fi
+
+    # MCP server config load test — use Python's own home resolution to avoid
+    # Windows path translation issues between bash (/c/Users/...) and Python (C:\Users\...)
+    if [[ -n "$py" && -f "$CONFIG_FILE" && -f "$INSTALL_DIR/server/maven_mcp_server.py" ]]; then
+        local mcp_test
+        mcp_test=$("$py" -c "
+from pathlib import Path
+import yaml
+cfg_path = Path.home() / '.vulnfix' / 'config.yaml'
+if not cfg_path.exists():
+    print('error: ' + str(cfg_path) + ' not found')
+else:
+    cfg = yaml.safe_load(open(cfg_path))
+    print('ok:test_mode=' + str(cfg['nexus']['test_mode']))
+" 2>&1 || echo "error")
+        if [[ "$mcp_test" == ok:* ]]; then
+            pass "MCP server config loads (${mcp_test#ok:})"
+        else
+            fail_check "MCP server config" "$mcp_test"
+        fi
+    fi
 
     echo
     if [[ "$fail_count" -eq 0 ]]; then
