@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# VulnFix CLI
+# ===========
+# Installed to ~/.vulnfix/bin/vulnfix
+# Available after running install.sh once.
+#
+# Commands:
+#   vulnfix init [--force]          Scaffold .github/ agent files into current Maven project
+#   vulnfix configure               Re-run Nexus/MCP configuration interactively
+#   vulnfix update                  Pull latest from org GitHub repo + re-install deps
+#   vulnfix validate                Check all prerequisites and config are correct
+#   vulnfix kb add <groupId:artId>  Scaffold a new knowledge-base YAML for an artifact
+
+set -euo pipefail
+
+INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_FILE="$INSTALL_DIR/config.yaml"
+TEMPLATES_DIR="$INSTALL_DIR/templates"
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+step()  { echo; echo "==> $1"; }
+ok()    { echo "    [OK] $1"; }
+warn()  { echo "    [WARN] $1"; }
+fail()  { echo "[ERROR] $1" >&2; exit 1; }
+
+require_pom() {
+    if [[ ! -f "pom.xml" ]]; then
+        fail "No pom.xml found in current directory. Run 'vulnfix init' from the root of a Java Maven project."
+    fi
+}
+
+# ── Command: init ─────────────────────────────────────────────────────────────
+cmd_init() {
+    local force=0
+    [[ "${1:-}" == "--force" ]] && force=1
+
+    require_pom
+    step "Scaffolding VulnFix agent into $(pwd)"
+
+    if [[ -d ".github/agents" && "$force" -eq 0 ]]; then
+        read -r -p "    .github/agents/ already exists. Overwrite? (y/N) " ans
+        [[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "Aborted."; exit 0; }
+    fi
+
+    mkdir -p .github/agents .github/prompts .github/hooks ".github/skills/vuln-remediation"
+
+    cp -r "$TEMPLATES_DIR/.github/agents/"*.agent.md     .github/agents/
+    cp -r "$TEMPLATES_DIR/.github/prompts/"*.prompt.md   .github/prompts/
+    cp    "$TEMPLATES_DIR/.github/hooks/vuln-hooks.json" .github/hooks/
+    cp    "$TEMPLATES_DIR/.github/skills/vuln-remediation/SKILL.md" \
+          ".github/skills/vuln-remediation/"
+    cp    "$TEMPLATES_DIR/.github/copilot-instructions.md" .github/
+
+    ok "Agent files scaffolded:"
+    find .github -type f | sort | sed 's/^/      /'
+
+    echo
+    echo "  Next:"
+    echo "  1. git add .github/ && git commit -m 'Add VulnFix agent'"
+    echo "  2. Open this folder in VS Code → Agent mode"
+    echo "  3. /vuln-fix CVE-XXXX-XXXXX groupId:artifactId version CRITICAL"
+}
+# 💡 This is like a franchisor who drops a ready-made operations manual
+#    into any new restaurant location — the brand identity (agent files)
+#    is identical everywhere; only the kitchen (the Java project) differs.
+# ❓ In this metaphor, what represents the Java project's pom.xml check?
+# 🔑 Confirming the location is actually a restaurant (has a kitchen / pom.xml)
+
+# ── Command: configure ────────────────────────────────────────────────────────
+cmd_configure() {
+    step "Configuring VulnFix"
+
+    read -r -p "    Nexus/Artifactory base URL [https://nexus.internal.yourorg.com]: " nexus_url
+    nexus_url="${nexus_url:-https://nexus.internal.yourorg.com}"
+    read -r -p "    Release repository name [maven-releases]: " nexus_repo
+    nexus_repo="${nexus_repo:-maven-releases}"
+    read -r -p "    Token env var name [NEXUS_TOKEN]: " token_var
+    token_var="${token_var:-NEXUS_TOKEN}"
+    read -r -p "    Test mode — Maven Central fallback? (y/N) [N]: " test_input
+    test_mode="false"
+    [[ "$test_input" == "y" || "$test_input" == "Y" ]] && test_mode="true"
+
+    cat > "$CONFIG_FILE" << EOF
+# VulnFix developer machine config — written by vulnfix configure
+nexus:
+  base_url: "$nexus_url"
+  repo_releases: "$nexus_repo"
+  auth_env_var: "$token_var"
+  timeout_seconds: 30
+  test_mode: $test_mode
+vulnfix:
+  max_test_retry_cycles: 3
+  branch_prefix: "vuln/fix-"
+  session_folder: ".copilot/vuln-sessions"
+EOF
+    ok "Written to $CONFIG_FILE"
+    echo "  Restart VS Code for changes to take effect."
+}
+
+# ── Command: update ───────────────────────────────────────────────────────────
+cmd_update() {
+    step "Updating VulnFix from origin"
+    git -C "$INSTALL_DIR" pull
+    ok "Pulled latest"
+
+    step "Re-installing Python dependencies"
+    python3 -m pip install --quiet fastmcp httpx pyyaml packaging
+    ok "Dependencies up to date"
+
+    echo
+    echo "  Update complete. Run 'vulnfix init --force' in any project"
+    echo "  to refresh its .github/agents/ files to the latest version."
+}
+
+# ── Command: validate ─────────────────────────────────────────────────────────
+cmd_validate() {
+    step "Validating VulnFix setup"
+    local ok_count=0 fail_count=0
+
+    check() {
+        local label="$1" result="$2"
+        if [[ "$result" == "ok" ]]; then
+            ok "$label"; (( ok_count++ )) || true
+        else
+            echo "    [FAIL] $label: $result"; (( fail_count++ )) || true
+        fi
+    }
+
+    # Python
+    py_ver=$(python3 --version 2>&1) && check "Python 3" "$py_ver" || check "Python 3" "not found"
+
+    # MCP server imports
+    mcp_check=$(python3 -c "import fastmcp, httpx, yaml, packaging" 2>&1) \
+        && check "Python deps (fastmcp, httpx, pyyaml, packaging)" "ok" \
+        || check "Python deps" "$mcp_check"
+
+    # Config file
+    [[ -f "$CONFIG_FILE" ]] \
+        && check "~/.vulnfix/config.yaml" "ok" \
+        || check "~/.vulnfix/config.yaml" "missing — run 'vulnfix configure'"
+
+    # MCP server file
+    [[ -f "$INSTALL_DIR/server/maven_mcp_server.py" ]] \
+        && check "~/.vulnfix/server/maven_mcp_server.py" "ok" \
+        || check "~/.vulnfix/server/maven_mcp_server.py" "missing — re-run install"
+
+    # Maven
+    mvn_ver=$(mvn --version 2>&1 | head -1) && check "Maven (mvn)" "$mvn_ver" \
+        || check "Maven (mvn)" "not found — add to PATH"
+
+    # m2 settings
+    M2="$HOME/.m2/settings.xml"
+    if [[ -f "$M2" ]] && grep -q "<mirror>" "$M2"; then
+        check "~/.m2/settings.xml (mirror)" "ok"
+    elif [[ -f "$M2" ]]; then
+        check "~/.m2/settings.xml" "exists but no <mirror> block"
+    else
+        check "~/.m2/settings.xml" "missing — run 'vulnfix configure'"
+    fi
+
+    # MCP server dry-run
+    mcp_dry=$(VULNFIX_CONFIG="$CONFIG_FILE" python3 "$INSTALL_DIR/server/maven_mcp_server.py" --help 2>&1 | head -1 || true)
+    [[ -n "$mcp_dry" ]] \
+        && check "MCP server starts" "ok (exits on --help as expected)" \
+        || check "MCP server starts" "error — check $INSTALL_DIR/server/maven_mcp_server.py"
+
+    echo
+    if [[ "$fail_count" -eq 0 ]]; then
+        echo "  All $ok_count checks passed. VulnFix is ready."
+    else
+        echo "  $ok_count passed, $fail_count failed. Fix issues above before using vulnfix."
+        exit 1
+    fi
+}
+# 🌸 each check runs
+#    ok or fail tallied up
+#    summary printed last
+# ❓ What exit code does validate return when any check fails?
+# 🔑 1
+
+# ── Command: kb add ───────────────────────────────────────────────────────────
+cmd_kb_add() {
+    local coord="${1:-}"
+    [[ -z "$coord" ]] && fail "Usage: vulnfix kb add groupId:artifactId"
+
+    local group_id="${coord%%:*}"
+    local artifact_id="${coord##*:}"
+    [[ -z "$group_id" || -z "$artifact_id" || "$group_id" == "$artifact_id" ]] && \
+        fail "Invalid format. Use groupId:artifactId (e.g. com.example:my-lib)"
+
+    local kb_file="$INSTALL_DIR/knowledge-base/$group_id/$artifact_id.yaml"
+    mkdir -p "$(dirname "$kb_file")"
+
+    if [[ -f "$kb_file" ]]; then
+        ok "Knowledge base entry already exists: $kb_file"
+        exit 0
+    fi
+
+    cat > "$kb_file" << EOF
+# Knowledge base entry: $group_id:$artifact_id
+# Maintained by the security/platform team.
+# Add one entry per version migration range.
+
+artifact:
+  group_id: $group_id
+  artifact_id: $artifact_id
+
+migrations:
+  - from_version_range: "X.Y.Z - A.B.C"
+    to_version_range: "A.B.C+"
+    cves: []
+    api_changes: []
+    import_changes: []
+    notes: >
+      Describe what changed between these versions and whether
+      code changes are required beyond the version bump.
+EOF
+    ok "Created: $kb_file"
+    echo "  Edit the file to add migration details, then commit to the vulnfix repo."
+}
+
+# ── Dispatch ──────────────────────────────────────────────────────────────────
+COMMAND="${1:-help}"
+shift || true
+
+case "$COMMAND" in
+    init)       cmd_init "$@" ;;
+    configure)  cmd_configure ;;
+    update)     cmd_update ;;
+    validate)   cmd_validate ;;
+    kb)
+        SUB="${1:-}"; shift || true
+        [[ "$SUB" == "add" ]] && cmd_kb_add "$@" || fail "Unknown kb subcommand: $SUB"
+        ;;
+    help|--help|-h)
+        echo "vulnfix — VulnFix agent CLI"
+        echo
+        echo "Commands:"
+        echo "  vulnfix init [--force]          Scaffold .github/ agent files into current Maven project"
+        echo "  vulnfix configure               Re-configure Nexus URL and MCP settings"
+        echo "  vulnfix update                  Pull latest agent version from org GitHub repo"
+        echo "  vulnfix validate                Check all prerequisites are correctly set up"
+        echo "  vulnfix kb add groupId:artId    Add a knowledge-base YAML for a new artifact"
+        ;;
+    *)
+        fail "Unknown command: $COMMAND. Run 'vulnfix help'."
+        ;;
+esac

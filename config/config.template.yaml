@@ -1,0 +1,44 @@
+# VulnFix — developer machine config
+# ====================================
+# Written by `vulnfix configure` to ~/.vulnfix/config.yaml
+# NOT committed to git — lives only on your machine.
+#
+# To reconfigure: run `vulnfix configure` again.
+
+nexus:
+  # Base URL of your internal Nexus or Artifactory instance.
+  # Example Nexus:       https://nexus.internal.yourorg.com
+  # Example Artifactory: https://artifactory.internal.yourorg.com
+  #
+  # Set test_mode: true below to use Maven Central instead (for local testing only).
+  base_url: "https://nexus.internal.yourorg.com"
+
+  # Name of the release repository to query for safe versions.
+  # Nexus default:       maven-releases
+  # Artifactory default: libs-release
+  repo_releases: "maven-releases"
+
+  # Name of the shell environment variable that holds your Nexus auth token.
+  # Set this variable in your shell profile (~/.bashrc, ~/.zshrc, or system env):
+  #   export NEXUS_TOKEN="your-personal-access-token"
+  # Never put the actual token value here.
+  auth_env_var: "NEXUS_TOKEN"
+
+  # HTTP request timeout in seconds.
+  timeout_seconds: 30
+
+  # Set true ONLY for local testing without an internal Nexus.
+  # When true, the MCP server queries Maven Central (search.maven.org) instead.
+  # Must be false in production.
+  test_mode: false
+
+# VulnFix agent behaviour settings
+vulnfix:
+  # Maximum test-fix cycles before test-guardian halts and writes failure-report.md
+  max_test_retry_cycles: 3
+
+  # Git branch name prefix for all fix branches
+  branch_prefix: "vuln/fix-"
+
+  # Local session state folder (relative to user home, never committed to git)
+  session_folder: ".copilot/vuln-sessions"

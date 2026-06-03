@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "bash ~/.vulnfix/hooks/create-branch.sh",
+        "powershell": "bash ~/.vulnfix/hooks/create-branch.sh",
+        "cwd": "${workspaceFolder}",
+        "timeoutSec": 30
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "bash ~/.vulnfix/hooks/enforce-internal-only.sh",
+        "powershell": "bash ~/.vulnfix/hooks/enforce-internal-only.sh",
+        "cwd": "${workspaceFolder}",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "bash ~/.vulnfix/hooks/audit-edit.sh",
+        "powershell": "bash ~/.vulnfix/hooks/audit-edit.sh",
+        "cwd": "${workspaceFolder}",
+        "timeoutSec": 10
+      }
+    ],
+    "subagentStop": [
+      {
+        "type": "command",
+        "bash": "bash ~/.vulnfix/hooks/write-phase-status.sh",
+        "powershell": "bash ~/.vulnfix/hooks/write-phase-status.sh",
+        "cwd": "${workspaceFolder}",
+        "timeoutSec": 15
+      }
+    ]
+  }
+}

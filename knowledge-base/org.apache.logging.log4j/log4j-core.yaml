@@ -1,0 +1,46 @@
+# Knowledge base entry: org.apache.logging.log4j:log4j-core
+# Maintained by the platform/security team
+# Last updated: 2026-05
+
+artifact:
+  group_id: org.apache.logging.log4j
+  artifact_id: log4j-core
+
+migrations:
+  - from_version_range: "2.0.0 - 2.16.0"
+    to_version_range: "2.17.0+"
+    cves: ["CVE-2021-44228", "CVE-2021-45046", "CVE-2021-45105"]
+    api_changes: []
+    import_changes: []
+    notes: >
+      No API changes between 2.x versions for standard usage.
+      The Log4Shell vulnerability (CVE-2021-44228) and related CVEs are in the
+      JNDI lookup processing code. Only a version bump is required.
+      No source code changes needed unless your code directly uses
+      JndiLookup or MessagePatternConverter classes.
+
+  - from_version_range: "1.x"
+    to_version_range: "2.x"
+    cves: []
+    api_changes:
+      - type: CLASS_REMOVED
+        old: org.apache.log4j.Logger
+        new: org.apache.logging.log4j.LogManager
+        description: Use LogManager.getLogger() instead of Logger.getLogger()
+      - type: CLASS_REMOVED
+        old: org.apache.log4j.Level
+        new: org.apache.logging.log4j.Level
+        description: Level enum values are the same (DEBUG, INFO, WARN, ERROR, FATAL)
+    import_changes:
+      - old_import: "import org.apache.log4j.Logger;"
+        new_import: "import org.apache.logging.log4j.LogManager;\nimport org.apache.logging.log4j.Logger;"
+        note: "Replace Logger.getLogger(Foo.class) with LogManager.getLogger(Foo.class)"
+      - old_import: "import org.apache.log4j.Level;"
+        new_import: "import org.apache.logging.log4j.Level;"
+        note: "No method changes — Level.DEBUG etc. remain the same"
+    notes: >
+      Migration from Log4j 1.x to 2.x is a major migration.
+      The groupId also changes: org.apache.log4j → org.apache.logging.log4j
+      Both the groupId and artifactId change.
+      This migration should be flagged to the developer for manual review
+      as configuration files (log4j.properties → log4j2.xml) also change.
